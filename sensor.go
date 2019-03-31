@@ -69,15 +69,19 @@ type Quaternion struct {
 	W float32
 }
 
+type Option func(sensor *Sensor)
+
 var defaultCalibrationOffsets CalibrationOffsets = []byte{
 	239, 255, 184, 255, 10, 0, 196, 0, 193, 0,
 	85, 255, 128, 0, 0, 0, 1, 0, 232, 3, 0, 0,
 }
 
 type Sensor struct {
-	bus    *i2c
-	mu     sync.Mutex
-	opMode byte
+	retryCount   int
+	retryTimeout time.Duration
+	bus          *i2c
+	mu           sync.Mutex
+	opMode       byte
 }
 
 func (s *Sensor) Status() (*Status, error) {
@@ -651,16 +655,25 @@ func (s *Sensor) init() error {
 	return nil
 }
 
-func NewSensor(addr uint8, bus int) (*Sensor, error) {
-	i2c, err := newI2C(addr, bus)
+func WithRetry(retryCount int, retryTimeout time.Duration) Option {
+	return func(sensor *Sensor) {
+		sensor.retryCount = retryCount
+		sensor.retryTimeout = retryTimeout
+	}
+}
+
+func NewSensor(addr uint8, bus int, options ...Option) (*Sensor, error) {
+	sensor := &Sensor{opMode: bno055OperationModeNdof}
+	for _, option := range options {
+		option(sensor)
+	}
+
+	i2c, err := newI2C(addr, bus, sensor.retryCount, sensor.retryTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	sensor := &Sensor{
-		bus:    i2c,
-		opMode: bno055OperationModeNdof,
-	}
+	sensor.bus = i2c
 
 	err = sensor.init()
 	if err != nil {
