@@ -1,4 +1,4 @@
-package bno055
+package i2c
 
 import (
 	"fmt"
@@ -12,14 +12,14 @@ const (
 	i2cSlave = 0x0703
 )
 
-type i2c struct {
+type Bus struct {
 	retryCount   int
 	retryTimeout time.Duration
 	mu           sync.Mutex
 	rc           *os.File
 }
 
-func newI2C(addr uint8, bus int, retryCount int, retryTimeout time.Duration) (*i2c, error) {
+func NewBus(addr uint8, bus int, retryCount int, retryTimeout time.Duration) (*Bus, error) {
 	file, err := os.OpenFile(fmt.Sprintf("/dev/i2c-%d", bus), os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -30,16 +30,16 @@ func newI2C(addr uint8, bus int, retryCount int, retryTimeout time.Duration) (*i
 		return nil, err
 	}
 
-	i2c := &i2c{
+	i2cBus := &Bus{
 		retryCount:   retryCount,
 		retryTimeout: retryTimeout,
 		rc:           file,
 	}
 
-	return i2c, nil
+	return i2cBus, nil
 }
 
-func (b *i2c) Read(reg byte) (byte, error) {
+func (b *Bus) Read(reg byte) (byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (b *i2c) Read(reg byte) (byte, error) {
 	return buf[0], err
 }
 
-func (b *i2c) Write(reg byte, val byte) error {
+func (b *Bus) Write(reg byte, val byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -81,7 +81,7 @@ func (b *i2c) Write(reg byte, val byte) error {
 	return err
 }
 
-func (b *i2c) ReadLen(reg byte, val []byte) error {
+func (b *Bus) ReadBuffer(reg byte, buff []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -91,7 +91,7 @@ func (b *i2c) ReadLen(reg byte, val []byte) error {
 			return err
 		}
 
-		_, err = b.rc.Read(val)
+		_, err = b.rc.Read(buff)
 		if err != nil {
 			return err
 		}
@@ -102,12 +102,12 @@ func (b *i2c) ReadLen(reg byte, val []byte) error {
 	return err
 }
 
-func (b *i2c) WriteLen(reg byte, val []byte) error {
+func (b *Bus) WriteBuffer(reg byte, buff []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	err := retry(func() error {
-		_, err := b.rc.Write(append([]byte{reg}, val...))
+		_, err := b.rc.Write(append([]byte{reg}, buff...))
 		if err != nil {
 			return err
 		}
@@ -118,7 +118,7 @@ func (b *i2c) WriteLen(reg byte, val []byte) error {
 	return err
 }
 
-func (b *i2c) Close() error {
+func (b *Bus) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

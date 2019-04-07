@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/kpeu3i/bno055/i2c"
 )
 
 type Status struct {
@@ -69,19 +71,30 @@ type Quaternion struct {
 	W float32
 }
 
-type Option func(sensor *Sensor)
-
 var defaultCalibrationOffsets CalibrationOffsets = []byte{
 	239, 255, 184, 255, 10, 0, 196, 0, 193, 0,
 	85, 255, 128, 0, 0, 0, 1, 0, 232, 3, 0, 0,
 }
 
-type Sensor struct {
+type I2CBus interface {
+	Read(reg byte) (byte, error)
+	Write(reg byte, val byte) error
+	ReadBuffer(reg byte, buff []byte) error
+	WriteBuffer(reg byte, buff []byte) error
+	Close() error
+}
+
+type Option func(config *config)
+
+type config struct {
 	retryCount   int
 	retryTimeout time.Duration
-	bus          *i2c
-	mu           sync.Mutex
-	opMode       byte
+}
+
+type Sensor struct {
+	mu     sync.Mutex
+	bus    I2CBus
+	opMode byte
 }
 
 func (s *Sensor) Status() (*Status, error) {
@@ -237,7 +250,7 @@ func (s *Sensor) Calibration() (CalibrationOffsets, *CalibrationStatus, error) {
 	}
 
 	offsets := make([]byte, 22)
-	err = s.bus.ReadLen(bno055AccelOffsetXLsb, offsets)
+	err = s.bus.ReadBuffer(bno055AccelOffsetXLsb, offsets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,7 +277,7 @@ func (s *Sensor) Calibrate(offsets CalibrationOffsets) error {
 		return err
 	}
 
-	err = s.bus.WriteLen(bno055AccelOffsetXLsb, offsets)
+	err = s.bus.WriteBuffer(bno055AccelOffsetXLsb, offsets)
 	if err != nil {
 		return err
 	}
@@ -470,7 +483,7 @@ func (s *Sensor) Quaternion() (*Quaternion, error) {
 		return nil, err
 	}
 
-	scale := float32(1 / (1 << 14))
+	scale := float32(1.0 / (1 << 14))
 
 	quaternion := &Quaternion{
 		W: scale * float32(w),
@@ -550,7 +563,7 @@ func (s *Sensor) setOperationMode(mode byte) error {
 
 func (s *Sensor) readVector(addr byte) (x, y, z int16, err error) {
 	buf := make([]byte, 6)
-	err = s.bus.ReadLen(addr, buf)
+	err = s.bus.ReadBuffer(addr, buf)
 	if err != nil {
 		return
 	}
@@ -564,7 +577,7 @@ func (s *Sensor) readVector(addr byte) (x, y, z int16, err error) {
 
 func (s *Sensor) readQuaternion(addr byte) (w, x, y, z int16, err error) {
 	buf := make([]byte, 8)
-	err = s.bus.ReadLen(addr, buf)
+	err = s.bus.ReadBuffer(addr, buf)
 	if err != nil {
 		return
 	}
@@ -652,35 +665,52 @@ func (s *Sensor) init() error {
 		return err
 	}
 
+	err = s.Calibrate(defaultCalibrationOffsets)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func WithRetry(retryCount int, retryTimeout time.Duration) Option {
-	return func(sensor *Sensor) {
-		sensor.retryCount = retryCount
-		sensor.retryTimeout = retryTimeout
+	return func(config *config) {
+		config.retryCount = retryCount
+		config.retryTimeout = retryTimeout
 	}
 }
 
 func NewSensor(addr uint8, bus int, options ...Option) (*Sensor, error) {
-	sensor := &Sensor{opMode: bno055OperationModeNdof}
+	config := &config{}
 	for _, option := range options {
-		option(sensor)
+		option(config)
 	}
 
-	i2c, err := newI2C(addr, bus, sensor.retryCount, sensor.retryTimeout)
+	i2cBus, err := i2c.NewBus(addr, bus, config.retryCount, config.retryTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	sensor.bus = i2c
+	sensor, err := NewSensorFromBus(i2cBus)
+	if err != nil {
+		return nil, err
+	}
 
 	err = sensor.init()
 	if err != nil {
 		return nil, err
 	}
 
-	err = sensor.Calibrate(defaultCalibrationOffsets)
+	return sensor, nil
+}
+
+func NewSensorFromBus(bus I2CBus) (*Sensor, error) {
+	sensor := &Sensor{
+		bus:    bus,
+		opMode: bno055OperationModeNdof,
+	}
+
+	err := sensor.init()
 	if err != nil {
 		return nil, err
 	}
